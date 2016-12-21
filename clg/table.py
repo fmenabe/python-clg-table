@@ -1,64 +1,93 @@
-# -*- coding: utf-8 -*-
+# coding: utf-8 -*-
 
+import io
+import os
 import sys
+import csv
 import subprocess
-
-#
-# Exceptions.
-#
-class ShellError(Exception):
-    pass
-
 
 width = lambda: int(subprocess.check_output(['tput', 'cols']))
 height = lambda: int(subprocess.check_output(['tput', 'lines']))
 
-#
-# Shell tables.
-#
-class Table:
-    def __init__(self, output_format='text',
-                 page=False, auto_flush=False,
-                 sizes=None, borders_color=None,
-                 csv_sep=';'):
-        self.output_format = output_format
-        self.page = page
-        self.auto_flush = auto_flush
-        self.sizes = sizes
-        self.borders_color = borders_color
-        self.csv_separtor = csv_sep
-        self._buffer = []
+class CLGTableError(Exception):
+    pass
 
-    def _colorize(self, color, value):
-        return '\033[%sm%s\033[00m' % (color, value)
+
+class Table:
+    def __init__(self, page=False, autoflush=False, output_file=None):
+        self.output_file = output_file
+        if self.output_file:
+            # Create directory.
+            if not os.path.exists(os.path.dirname(self.output_file)):
+                os.makedirs(os.path.dirname(self.output_file))
+            # Remove file if exists.
+            if os.path.exists(self.output_file):
+                os.remove(self.output_file)
+        self.page = page
+        self.autoflush = autoflush
+        self.buffer = []
 
     def _autoflush(func):
         def wrapper(self, *args, **kwargs):
             func(self, *args, **kwargs)
-            if self.auto_flush:
+            if self.autoflush:
                 self.flush()
         return wrapper
 
     @_autoflush
-    def add_border(self, sizes=None, color=None):
-        if self.output_format != 'text':
-            return
+    def add_header(self, *args, **kwargs):
+        raise NotImplementedError()
 
+    @_autoflush
+    def add_line(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def flush(self):
+        if self.output_file:
+            with open(self.output_file, 'a') as fhandler:
+                fhandler.write('\n'.join(self.buffer))
+        elif self.page:
+            import os, pydoc
+            os.environ['PAGER'] = 'less -c -r'
+            pydoc.pager('\n'.join(self.buffer))
+        else:
+            print('\n'.join(self.buffer))
+        self.buffer = []
+
+
+class Text(Table):
+    def __init__(self, page=False, autoflush=False, output_file=None,
+                 sizes=None, borders_color=None, text_color=None):
+        Table.__init__(self, page, autoflush, output_file)
+        self.page = page
+        self.sizes = sizes
+        self.borders_color = borders_color
+        self.text_color = text_color
+
+    def _colorize(self, color, value):
+        return '\033[%sm%s\033[00m' % (color, value)
+
+    @Table._autoflush
+    def add_border(self, sizes=None, color=None):
+        color = color or self.borders_color
         line = '+'
         for idx, size in enumerate(sizes or self.sizes):
             line += '-' * size
             line += '+'
-        if color or self.borders_color:
-            line = self._colorize(color or self.borders_color, line)
-        self._buffer.append(line)
+        if color:
+            line = self._colorize(color, line)
+        self.buffer.append(line)
 
-    def _add_text_line(self, values, sizes=None, colors=None,
-                       borders_color=None, indent=1, sep='|'):
+    @Table._autoflush
+    def add_line(self, values, sizes=None, colors=None, border_color=None, newline_indent=1):
         sizes = sizes or self.sizes
+        border_color = border_color or self.borders_color
+        colors = colors or [self.text_color for __ in range(len(sizes))]
+
         if sizes is None:
-            raise ShellError('no sizes')
+            raise TableError('no sizes')
         if len(sizes) != len(values):
-            raise ShellError('length of sizes is different from length of values')
+            raise TableError('length of sizes is different from length of values')
 
         lines = []
         for idx, value in enumerate(values):
@@ -99,46 +128,90 @@ class Table:
                     new_line = []
                     for __ in range(len(sizes)):
                        new_column = ' ' * sizes[__]
-                       if colors and colors[__]:
-                           new_column = colorize(colors[idx], new_column)
+                       if colors[idx]:
+                           new_column = self._colorize(colors[idx], new_column)
                        new_line.append(new_column)
                     lines.append(new_line)
-                if colors and colors[idx]:
-                    line = colorize(colors[idx], line)
+                if colors[idx]:
+                    line = self._colorize(colors[idx], line)
                 lines[line_number][idx] = line
                 line_number += 1
 
-        border = sep if not borders_color else colorize(borders_color, sep)
-        self._buffer.extend(border + border.join(line) + border for line in lines)
+        border = '|' if not border_color else self._colorize(border_color, '|')
+        self.buffer.extend(border + border.join(line) + border for line in lines)
 
-    def _add_csv_line(self, values, sep):
-        pass
 
-    def _add_dokuwiki_line(self, values, sep):
-        self._buffer.append('%s %s %s' % (
-            sep,
-            (' %s ' % sep).join([val.replace('\n', ' \\\\') for val in values]),
-            sep))
+class CSV(Table):
+    def __init__(self, page=False, autoflush=False, output_file=None, separator=','):
+        Table.__init__(self, page, autoflush, output_file)
+        self.separator = separator
 
-    @_autoflush
-    def add_line(self, values, sizes=None, colors=None, borders_color=None, indent=1):
-        {'text': lambda: self._add_text_line(values, sizes, colors, borders_color, indent, sep='|'),
-         'dokuwiki': lambda: self._add_dokuwiki_line(map(str, values), sep='|'),
-         'csv': lambda: self._add_csv_line(values, self.csv_separator)
-        }.get(self.output_format)()
+    @Table._autoflush
+    def add_line(self, values):
+        line = io.StringIO()
+        csv_line = csv.writer(line, delimiter=self.separator, quoting=csv.QUOTE_ALL)
+        csv_line.writerow(values)
+        self.buffer.append(line.getvalue().strip())
 
-    @_autoflush
-    def add_header(self, values, sizes=None, colors=None, borders_color=None, indent=1):
-        {'text': lambda: self._add_text_line(values, sizes, colors, borders_color, indent, sep='|'),
-         'dokuwiki': lambda: self._add_dokuwiki_line(values, sep='^'),
-         'csv': lambda: self._add_csv_line(values, self.csv_separator)
-        }.get(self.output_format)()
 
-    def flush(self):
-        if self.page:
-            import os, pydoc
-            os.environ['PAGER'] = 'less -c -r'
-            pydoc.pager('\n'.join(self._buffer))
-        else:
-            print('\n'.join(self._buffer))
-        self._buffer = []
+class Dokuwiki(Table):
+    def __init__(self, page=False, autoflush=False, output_file=None):
+        Table.__init__(self, page, autoflush, output_file)
+
+    @Table._autoflush
+    def add_line(self, values, separator='|'):
+        # Replace newline separator.
+        values = [value.replace('\n', '\\\\') for value in values]
+
+        self.buffer.append(
+            '%s %s %s' % (separator, (' %s ' % separator).join(values), separator))
+
+
+def init(args, **kwargs):
+    format = args['format'] or kwargs.pop('format', 'text')
+    page = args['page'] or kwargs.pop('page', False)
+    autoflush = args['autoflush'] or kwargs.pop('autoflush', False)
+    output_file = args['output_file'] or kwargs.pop('output_file', None)
+
+    if format == 'text':
+        content = Text(page, autoflush, output_file, **kwargs)
+    elif format == 'csv':
+        separator = args['separator'] or kwargs.pop('separator', ',')
+        content = CSV(page, autoflush, output_file, separator)
+    elif format == 'dokuwiki':
+        content = Dokuwiki(page, autoflush, output_file)
+    else:
+        raise CLGTableError('invalid format: %s' % format)
+
+    setattr(sys.modules[__name__], 'format', format)
+    setattr(sys.modules[__name__], 'content', content)
+
+def add_border(*args, **kwargs):
+    if format == 'text':
+        content.add_border(*args, **kwargs)
+    elif format == 'csv':
+        return
+    elif format == 'dokuwiki':
+        return
+
+def add_header(values, **kwargs):
+    if format == 'text':
+        content.add_line(values, **kwargs)
+    elif format == 'csv':
+        content.add_line(values)
+    elif format == 'dokuwiki':
+        content.add_line(values, separator='^')
+
+def add_line(values, **kwargs):
+    if format == 'text':
+        content.add_line(values, **kwargs)
+    elif format == 'csv':
+        content.add_line(values)
+    elif format == 'dokuwiki':
+        content.add_line(values)
+
+def flush():
+    content.flush()
+
+def buffer():
+    return content._buffer
