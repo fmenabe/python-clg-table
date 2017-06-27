@@ -5,213 +5,344 @@ import os
 import sys
 import csv
 import subprocess
+from pprint import pprint
+from namedlist import namedlist
 
-width = lambda: int(subprocess.check_output(['tput', 'cols']))
-height = lambda: int(subprocess.check_output(['tput', 'lines']))
+TOPLEFT = '┌'
+TOPRIGHT = '┐'
+BOTTOMLEFT = '└'
+BOTTOMRIGHT = '┘'
+VERT = '│'
+HORIZ = '─'
+INTERSECTION = '┼'
+TOPINTER = '┬'
+BOTTOMINTER = '┴'
+LEFTINTER = '├'
+RIGHTINTER = '┤'
+
+_SELF = sys.modules[__name__]
+
+# Define a cli logger.
+import logging
+logger = logging.getLogger('clg-table')
+logger.setLevel('WARN')
+cli_handler = logging.StreamHandler()
+cli_handler.setFormatter(logging.Formatter('(clg-table) %(levelname)s: %(message)s'))
+logger.addHandler(cli_handler)
+
+ColumnWidths = namedlist('ColumWidths', ('width', 'min_width', 'max_width', 'text_width'))
+BorderVisibility = namedlist('BorderVisibility', ('top', 'right', 'bottom', 'left'))
+
+term_width = lambda: int(subprocess.check_output(['tput', 'cols']))
+term_height = lambda: int(subprocess.check_output(['tput', 'lines']))
 
 class CLGTableError(Exception):
     pass
 
 
-class Table:
-    def __init__(self, page=False, autoflush=False, output_file=None):
-        self.output_file = output_file
-        if self.output_file:
-            # Create directory.
-            if not os.path.exists(os.path.dirname(self.output_file)):
-                os.makedirs(os.path.dirname(self.output_file))
-            # Remove file if exists.
-            if os.path.exists(self.output_file):
-                os.remove(self.output_file)
+def init(args, **kwargs):
+    # Pop format argument.
+    output_format = args.format or 'text'
+    output_class = getattr(_SELF, '{:s}Table'.format(output_format.capitalize()))
+
+    params = {'page': args.page or False,
+              'output_file': args.output_file or None}
+    if args.format == 'text':
+        params.update(widths=kwargs.pop('widths', []),
+                      text_color=kwargs.pop('text_color', None),
+                      border_color=kwargs.pop('border_color', None))
+    if args.format == 'csv':
+        params.update(separator=args.csv_separator or ';')
+
+    return output_class(**params)
+
+
+class Row:
+    def __init__(self, *cells):
+        self.cells = cells
+
+class Header(Row):
+    def __init__(self, *cells):
+        Row.__init__(self, *cells)
+
+class Cell:
+    def __init__(self, text, **kwargs):
+        self.text = text.split('\n') if not isinstance(text, (list, tuple)) else list(text)
+        self.min_width = kwargs.get('min_width', -1)
+        self.width = kwargs.get('width', -1)
+        self.max_width = kwargs.get('max_width', -1)
+        self.padding_top = kwargs.get('padding_top', 0)
+        self.padding_bottom = kwargs.get('padding_bottom', 0)
+        self.padding_left = kwargs.get('padding_left', 1)
+        self.padding_right = kwargs.get('padding_right', 1)
+        self.halign = kwargs.get('halign', 'left')
+        self.valign = kwargs.get('valign', 'top')
+        self.newline_indent = kwargs.get('newline_indent', 1)
+        self.border_color = kwargs.get('border_color', None)
+        self.text_color = kwargs.get('text_color', None)
+#        self.border_visibility = BorderVisibility(1, 1, 1, 1)
+
+    def get_min_width(self):
+        return (self.min_width
+                if self.min_width != -1
+                else (self.padding_left + 1 + self.padding_right))
+
+    def get_text_width(self):
+        return (self.padding_left
+                + max(len(val) for val in self.text)
+                + self.padding_right)
+
+    def add_padding(self, value):
+        return ' ' * self.padding_left + value + ' ' * self.padding_right
+
+    def set_alignment(self, value, width):
+        alignment = {'left': '<', 'center': '^', 'right': '>'}[self.halign]
+        width = width + self.padding_left + self.padding_right
+        return '{:{align}{width}s}'.format(value, align=alignment, width=width)
+
+    def format(self, value, width):
+        """Add left/right paddings to the value and format with width and alignment."""
+        value = ' ' * self.padding_left + value + ' ' * self.padding_right
+        alignment = {'left': '<', 'center': '^', 'right': '>'}[self.halign]
+        width = width + self.padding_left + self.padding_right
+        return '{:{align}{width}s}'.format(value, align=alignment, width=width)
+
+    def split_word(self, word, width):
+        lines = []
+        first_line = True
+        while word:
+            cur_width = (
+                width - self.newline_indent
+                if not first_line
+                else width)
+            string = (
+                (' ' * self.newline_indent if not first_line else '')
+                + word[0:cur_width])
+            lines.append(string)
+            word = word[cur_width:]
+            first_line = False
+        return lines
+
+    def split_text(self, width):
+        at_start = lambda line: line == '' or line == ' ' * self.newline_indent
+
+        # For padding top and bottom, add empty lines at start/end of the text.
+        for _ in range(self.padding_top):
+            self.text.insert(0, ' ')
+        for _ in range(self.padding_bottom):
+            self.text.append(' ')
+
+        # For calculated text length, ignore left/right paddings which are added
+        # for each lines.
+        width = width - self.padding_left - self.padding_right
+        lines = []
+        for line in self.text:
+            # No split needed if the length of the current line is inferior to the width.
+            if len(line) <= width:
+                lines.append(self.format(line, width))
+                continue
+
+            # Split current line on words.
+            words = line.split(' ')
+            cur_line = ''
+            while words:
+                word = words.pop(0)
+
+                # Add word to the current line.
+                new_line = cur_line + ('' if at_start(cur_line) else ' ') + word
+
+                if len(new_line) > width:
+                    # Manage the case where the word is bigger than width.
+                    if len(word) > width:
+                        lines.extend(self.format(string, width)
+                                     for string in self.split_word(word, width))
+                    # Add the current line, and initialize a new line with the word.
+                    else:
+                        lines.append(self.format(cur_line, width))
+                        cur_line = ' ' * self.newline_indent + word
+                        # If the word with the newline indentation is bigger than width,
+                        # split the word.
+                        if len(cur_line) > width:
+                            lines.extend(self.format(string, width)
+                                         for string in self.split_word(cur_line, width))
+                            cur_line = ' ' * self.newline_indent
+                else:
+                    cur_line = new_line
+
+            # Add the remaining line if not empty.
+            if not at_start(cur_line):
+                lines.append(self.format(cur_line, width))
+
+        self.text = lines
+
+
+class Table(list):
+    def __init__(self, page=False, output_file=None):
         self.page = page
-        self.autoflush = autoflush
-        self.buffer = []
+        self.output_file = output_file
 
-    def _autoflush(func):
-        def wrapper(self, *args, **kwargs):
-            func(self, *args, **kwargs)
-            if self.autoflush:
-                self.flush()
-        return wrapper
 
-    @_autoflush
-    def add_header(self, *args, **kwargs):
-        raise NotImplementedError()
+class TextTable(Table):
+    def __init__(self, widths, page=False, output_file=None,
+                 text_color=None, border_color=None):
+        Table.__init__(self, page, output_file)
+        self.widths = []
+        self.heigths = []
 
-    @_autoflush
-    def add_line(self, *args, **kwargs):
-        raise NotImplementedError()
+    def get_symbol(self, side, row_idx, col_idx):
+        first_row = row_idx == 0
+        last_row = row_idx == len(self) - 1
+        first_col = col_idx == 0
+        last_col = col_idx == len(self.widths) - 1
+
+        cell = self[row_idx].cells[col_idx]
+        if side == 'topleft':
+            if first_row and first_col:
+                return TOPLEFT
+            elif first_row:
+                return TOPINTER
+            elif first_col:
+                return LEFTINTER
+            else:
+                return INTERSECTION
+        elif side == 'topright':
+            if first_row:
+                return TOPRIGHT
+            elif last_col:
+                return RIGHTINTER
+            else:
+                return INTERSECTION
+        elif side == 'bottomleft':
+            if last_row and first_col:
+                return BOTTOMLEFT
+            elif last_row:
+                return BOTTOMINTER
+            elif first_col:
+                return LEFTINTER
+            else:
+                return INTERSECTION
+        elif side == 'bottomright':
+            if last_row and last_col:
+                return BOTTOMRIGHT
+            elif first_row:
+                return TOPRIGHT
+            else:
+                return INTERSECTION
 
     def flush(self):
-        if self.output_file:
-            with open(self.output_file, 'a') as fhandler:
-                fhandler.write('\n'.join(self.buffer))
-        elif self.page:
-            import os, pydoc
-            os.environ['PAGER'] = 'less -c -r'
-            pydoc.pager('\n'.join(self.buffer))
-        else:
-            print('\n'.join(self.buffer))
-        self.buffer = []
+        def get_row_height(row):
+            heights = []
+            for col_idx, cell in enumerate(row.cells):
+                cell.split_text(self.widths[col_idx])
+                heights.append(len(cell.text))
+            return max(heights)
 
-
-class Text(Table):
-    def __init__(self, page=False, autoflush=False, output_file=None,
-                 sizes=None, borders_color=None, text_color=None):
-        Table.__init__(self, page, autoflush, output_file)
-        self.page = page
-        self.sizes = sizes
-        self.borders_color = borders_color
-        self.text_color = text_color
-
-    def _colorize(self, color, value):
-        return '\033[%sm%s\033[00m' % (color, value)
-
-    @Table._autoflush
-    def add_border(self, sizes=None, color=None):
-        color = color or self.borders_color
-        line = '+'
-        for idx, size in enumerate(sizes or self.sizes):
-            line += '-' * size
-            line += '+'
-        if color:
-            line = self._colorize(color, line)
-        self.buffer.append(line)
-
-    @Table._autoflush
-    def add_line(self, values, sizes=None, colors=None, border_color=None, newline_indent=1):
-        sizes = sizes or self.sizes
-        border_color = border_color or self.borders_color
-        colors = colors or [self.text_color for __ in range(len(sizes))]
-
-        if sizes is None:
-            raise TableError('no sizes')
-        if len(sizes) != len(values):
-            raise TableError('length of sizes is different from length of values')
+        self._get_columns_widths()
 
         lines = []
-        for idx, value in enumerate(values):
-            size = sizes[idx] - 2
-            if not isinstance(value, str):
-                value = str(value)
+        text_row_idx, text_col_idx = 0, 0
+        for row_idx, row in enumerate(self):
+            height = get_row_height(row)
 
-            line_number = 0
-            column_lines = []
+            # Initialize each cells with empty string for the current row.
+            if row_idx == 0:
+                lines.append(['' for _ in range(len(self.widths) * 2 + 1)])
+            for _ in range(height + 1):
+                lines.append(['' for _ in range(len(self.widths) * 2 + 1)])
 
-            # Split column value on new line.
-            value_lines = value.split('\n')
-            for line in value_lines:
-                # Split line on word.
-                line = line.split(' ')
-                cur_line = ' '
-                while line:
-                    word = line.pop(0)
-                    new_line = cur_line + word + ' '
-                    if len(new_line) > size + 2:
-                        if cur_line == ' ':
-                            cur_line = new_line
-                            column_lines.append(cur_line)
-                            cur_line = ' ' * indent + ' '
-                        else:
-                            cur_line += ' ' * (size + 2 - len(cur_line))
-                            column_lines.append(cur_line)
-                            cur_line = ' ' * indent + ' ' + word + ' '
-                    else:
-                        cur_line = new_line
-                cur_line += ' ' * (size + 2 - len(cur_line))
-                column_lines.append(cur_line)
+            for col_idx, cell in enumerate(row.cells):
+                # Add top border.
+                lines[text_row_idx][text_col_idx] = self.get_symbol(
+                    'topleft', row_idx, col_idx)
+                lines[text_row_idx][text_col_idx + 1] = HORIZ * self.widths[col_idx]
+                lines[text_row_idx][text_col_idx + 2] = self.get_symbol(
+                    'topright', row_idx, col_idx)
 
-            # Add column lines.
-            for line in column_lines:
-                if line_number > len(lines) - 1:
-                    # Initialize a new line.
-                    new_line = []
-                    for __ in range(len(sizes)):
-                       new_column = ' ' * sizes[__]
-                       if colors[idx]:
-                           new_column = self._colorize(colors[idx], new_column)
-                       new_line.append(new_column)
-                    lines.append(new_line)
-                if colors[idx]:
-                    line = self._colorize(colors[idx], line)
-                lines[line_number][idx] = line
-                line_number += 1
+                # Add text.
+                for _ in range(1, height + 1):
+                    lines[text_row_idx + _][text_col_idx] = VERT
+                    try:
+                        text = cell.text[_ - 1]
+                        lines[text_row_idx + _][text_col_idx + 1] = text
+                    except IndexError:
+                        lines[text_row_idx + _][text_col_idx + 1] = ' ' * self.widths[col_idx]
+                    lines[text_row_idx + _][text_col_idx + 2] = VERT
 
-        border = '|' if not border_color else self._colorize(border_color, '|')
-        self.buffer.extend(border + border.join(line) + border for line in lines)
+                # Print bottom border.
+                lines[text_row_idx + height + 1][text_col_idx] = self.get_symbol(
+                    'bottomleft', row_idx, col_idx)
+                lines[text_row_idx + height + 1][text_col_idx + 1] = HORIZ * self.widths[col_idx]
+                lines[text_row_idx + height + 1][text_col_idx + 2] = self.get_symbol(
+                    'bottomright', row_idx, col_idx)
+
+                text_col_idx += 2
+
+            text_row_idx += height + 1
+            text_col_idx = 0
+        print('\n'.join(''.join(line) for line in lines))
+
+    def _get_columns_widths(self):
+        columns_widths = []
+        # For each column, get minimal, defined, maximal and text width.
+        for row in self:
+            for col_idx, cell in enumerate(row.cells):
+                if col_idx >= len(columns_widths):
+                    columns_widths.append(ColumnWidths(-1, -1, -1, -1))
+                column_widths = columns_widths[col_idx]
+                column_widths.width = max((cell.width, column_widths.width))
+                column_widths.min_width = max((cell.get_min_width(), column_widths.min_width))
+                column_widths.max_width = max((cell.max_width, column_widths.max_width))
+                column_widths.text_width = max((cell.get_text_width(), column_widths.text_width))
+
+        # Distribute widths based on terminal width and number of borders.
+        remaining_size = term_width() - len(columns_widths) - 1
+        status = []
+        for column in columns_widths:
+            if column.width != -1:
+                self.widths.append(column.width)
+                status.append(True)
+                remaining_size -= column.width
+            else:
+                self.widths.append(column.min_width)
+                status.append(True if column.text_width <= column.min_width else False)
+                remaining_size -= column.min_width
+
+        while True:
+            if remaining_size <= 0 or all(status):
+                break
+
+            for idx, column in enumerate(columns_widths):
+                if status[idx]:
+                    continue
+
+                preferred_width = (
+                    column.max_width if column.max_width != -1 else column.text_width)
+
+                # Increment current column.
+                if self.widths[idx] < preferred_width:
+                    self.widths[idx] += 1
+                    remaining_size -= 1
+
+                    # Mark column as done if column's width is equal to preferred width.
+                    if self.widths[idx] == preferred_width:
+                        status[idx] = True
+
+                    # Stop here if there is nothinh remaining.
+                    if remaining_size <= 0:
+                        break
+
+        # Check there is no overflow or throw a warning.
+        if remaining_size < 0:
+            logger.warn(
+                'unable to adapt size (terminal size: {:d}, overflow: {:d})!'
+                .format(term_width(), -remaining_size))
 
 
-class CSV(Table):
-    def __init__(self, page=False, autoflush=False, output_file=None, separator=','):
-        Table.__init__(self, page, autoflush, output_file)
-        self.separator = separator
-
-    @Table._autoflush
-    def add_line(self, values):
-        line = io.StringIO()
-        csv_line = csv.writer(line, delimiter=self.separator, quoting=csv.QUOTE_ALL)
-        csv_line.writerow(values)
-        self.buffer.append(line.getvalue().strip())
+class CsvTable(Table):
+    def __init__(self, page=False, output_file=None, separator=';'):
+        Table.__init__(self, page, output_file)
 
 
-class Dokuwiki(Table):
-    def __init__(self, page=False, autoflush=False, output_file=None):
-        Table.__init__(self, page, autoflush, output_file)
-
-    @Table._autoflush
-    def add_line(self, values, separator='|'):
-        # Replace newline separator.
-        values = [value.replace('\n', '\\\\') for value in values]
-
-        self.buffer.append(
-            '%s %s %s' % (separator, (' %s ' % separator).join(values), separator))
-
-
-def init(args, **kwargs):
-    format = args['format'] or kwargs.pop('format', 'text')
-    page = args['page'] or kwargs.pop('page', False)
-    autoflush = args['autoflush'] or kwargs.pop('autoflush', False)
-    output_file = args['output_file'] or kwargs.pop('output_file', None)
-
-    if format == 'text':
-        content = Text(page, autoflush, output_file, **kwargs)
-    elif format == 'csv':
-        separator = args['separator'] or kwargs.pop('separator', ',')
-        content = CSV(page, autoflush, output_file, separator)
-    elif format == 'dokuwiki':
-        content = Dokuwiki(page, autoflush, output_file)
-    else:
-        raise CLGTableError('invalid format: %s' % format)
-
-    setattr(sys.modules[__name__], 'format', format)
-    setattr(sys.modules[__name__], 'content', content)
-
-def add_border(*args, **kwargs):
-    if format == 'text':
-        content.add_border(*args, **kwargs)
-    elif format == 'csv':
-        return
-    elif format == 'dokuwiki':
-        return
-
-def add_header(values, **kwargs):
-    if format == 'text':
-        content.add_line(values, **kwargs)
-    elif format == 'csv':
-        content.add_line(values)
-    elif format == 'dokuwiki':
-        content.add_line(values, separator='^')
-
-def add_line(values, **kwargs):
-    if format == 'text':
-        content.add_line(values, **kwargs)
-    elif format == 'csv':
-        content.add_line(values)
-    elif format == 'dokuwiki':
-        content.add_line(values)
-
-def flush():
-    content.flush()
-
-def buffer():
-    return content._buffer
+class DokuwikiTable(Table):
+    def __init__(self, page=False, output_file=None):
+        Table.__init__(self, page, output_file)
