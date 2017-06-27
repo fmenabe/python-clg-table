@@ -8,18 +8,34 @@ import subprocess
 from pprint import pprint
 from namedlist import namedlist
 
-TOPLEFT = '┌'
-TOPRIGHT = '┐'
-BOTTOMLEFT = '└'
-BOTTOMRIGHT = '┘'
-VERT = '│'
-HORIZ = '─'
-INTERSECTION = '┼'
-TOPINTER = '┬'
-BOTTOMINTER = '┴'
-LEFTINTER = '├'
-RIGHTINTER = '┤'
-
+STYLES = {
+    'modern': {
+        'topleft': '┌',
+        'topright':'┐',
+        'bottomleft': '└',
+        'bottomright': '┘',
+        'vertical': '│',
+        'horizontal': '─',
+        'intersection': '┼',
+        'topinter': '┬',
+        'bottominter': '┴',
+        'leftinter': '├',
+        'rightinter': '┤'
+    },
+    'classic': {
+        'topleft': '+',
+        'topright': '+',
+        'bottomleft': '+',
+        'bottomright': '+',
+        'vertical': '|',
+        'horizontal': '-',
+        'intersection': '+',
+        'topinter': '+',
+        'bottominter': '+',
+        'leftinter': '+',
+        'rightinter': '+'
+    }
+}
 _SELF = sys.modules[__name__]
 
 # Define a cli logger.
@@ -49,6 +65,7 @@ def init(args, **kwargs):
               'output_file': args.output_file or None}
     if args.format == 'text':
         params.update(widths=kwargs.pop('widths', []),
+                      style=kwargs.pop('style', 'modern'),
                       text_color=kwargs.pop('text_color', None),
                       border_color=kwargs.pop('border_color', None))
     if args.format == 'csv':
@@ -183,9 +200,10 @@ class Table(list):
 
 
 class TextTable(Table):
-    def __init__(self, widths, page=False, output_file=None,
+    def __init__(self, widths, page=False, output_file=None, style='modern',
                  text_color=None, border_color=None):
         Table.__init__(self, page, output_file)
+        self.style = style
         self.widths = []
         self.heigths = []
 
@@ -198,36 +216,36 @@ class TextTable(Table):
         cell = self[row_idx].cells[col_idx]
         if side == 'topleft':
             if first_row and first_col:
-                return TOPLEFT
+                return STYLES[self.style]['topleft']
             elif first_row:
-                return TOPINTER
+                return STYLES[self.style]['topinter']
             elif first_col:
-                return LEFTINTER
+                return STYLES[self.style]['leftinter']
             else:
-                return INTERSECTION
+                return STYLES[self.style]['intersection']
         elif side == 'topright':
             if first_row:
-                return TOPRIGHT
+                return STYLES[self.style]['topright']
             elif last_col:
-                return RIGHTINTER
+                return STYLES[self.style]['rightinter']
             else:
-                return INTERSECTION
+                return STYLES[self.style]['intersection']
         elif side == 'bottomleft':
             if last_row and first_col:
-                return BOTTOMLEFT
+                return STYLES[self.style]['bottomleft']
             elif last_row:
-                return BOTTOMINTER
+                return STYLES[self.style]['bottominter']
             elif first_col:
-                return LEFTINTER
+                return STYLES[self.style]['leftinter']
             else:
-                return INTERSECTION
+                return STYLES[self.style]['intersection']
         elif side == 'bottomright':
             if last_row and last_col:
-                return BOTTOMRIGHT
+                return STYLES[self.style]['bottomright']
             elif first_row:
-                return TOPRIGHT
+                return STYLES[self.style]['topright']
             else:
-                return INTERSECTION
+                return STYLES[self.style]['intersection']
 
     def flush(self):
         def get_row_height(row):
@@ -254,24 +272,26 @@ class TextTable(Table):
                 # Add top border.
                 lines[text_row_idx][text_col_idx] = self.get_symbol(
                     'topleft', row_idx, col_idx)
-                lines[text_row_idx][text_col_idx + 1] = HORIZ * self.widths[col_idx]
+                lines[text_row_idx][text_col_idx + 1] = (
+                    STYLES[self.style]['horizontal'] * self.widths[col_idx])
                 lines[text_row_idx][text_col_idx + 2] = self.get_symbol(
                     'topright', row_idx, col_idx)
 
                 # Add text.
                 for _ in range(1, height + 1):
-                    lines[text_row_idx + _][text_col_idx] = VERT
+                    lines[text_row_idx + _][text_col_idx] = STYLES[self.style]['vertical']
                     try:
                         text = cell.text[_ - 1]
                         lines[text_row_idx + _][text_col_idx + 1] = text
                     except IndexError:
                         lines[text_row_idx + _][text_col_idx + 1] = ' ' * self.widths[col_idx]
-                    lines[text_row_idx + _][text_col_idx + 2] = VERT
+                    lines[text_row_idx + _][text_col_idx + 2] = STYLES[self.style]['vertical']
 
                 # Print bottom border.
                 lines[text_row_idx + height + 1][text_col_idx] = self.get_symbol(
                     'bottomleft', row_idx, col_idx)
-                lines[text_row_idx + height + 1][text_col_idx + 1] = HORIZ * self.widths[col_idx]
+                lines[text_row_idx + height + 1][text_col_idx + 1] = (
+                    STYLES[self.style]['horizontal'] * self.widths[col_idx])
                 lines[text_row_idx + height + 1][text_col_idx + 2] = self.get_symbol(
                     'bottomright', row_idx, col_idx)
 
