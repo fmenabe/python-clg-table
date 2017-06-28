@@ -55,9 +55,32 @@ term_height = lambda: int(subprocess.check_output(['tput', 'lines']))
 class CLGTableError(Exception):
     pass
 
+class Buffer(list):
+    def get(self, index, default):
+        try:
+            return self[index]
+        except IndexError:
+            return default
+
+    def set(self, index, value, fill='?'):
+        try:
+            self[index] = value or self[index] or fill
+        except IndexError:
+            for _ in range(len(self), index):
+                self.append(fill)
+            self.append(value or fill)
+        return self[index]
+
+    def setdefault(self, index, value, fill='?'):
+        try:
+            return self[index]
+        except IndexError:
+            for _ in range(len(self), index):
+                self.append(fill)
+            self.append(value)
+            return self[index]
 
 def init(args, **kwargs):
-    # Pop format argument.
     output_format = args.format or 'text'
     output_class = getattr(_SELF, '{:s}Table'.format(output_format.capitalize()))
 
@@ -216,36 +239,80 @@ class TextTable(Table):
         cell = self[row_idx].cells[col_idx]
         if side == 'topleft':
             if first_row and first_col:
-                return STYLES[self.style]['topleft']
-            elif first_row:
-                return STYLES[self.style]['topinter']
-            elif first_col:
-                return STYLES[self.style]['leftinter']
-            else:
-                return STYLES[self.style]['intersection']
-        elif side == 'topright':
+                print(side, row_idx, col_idx, 'in here?')
+                return self.set_color(STYLES[self.style]['topleft'], cell.border_color)
+        elif side == 'tophoriz':
             if first_row:
-                return STYLES[self.style]['topright']
-            elif last_col:
-                return STYLES[self.style]['rightinter']
-            else:
-                return STYLES[self.style]['intersection']
+                return self.set_color(
+                    STYLES[self.style]['horizontal'] * self.widths[col_idx],
+                    cell.border_color)
+        elif side == 'topright':
+            if first_row and last_col:
+                return self.set_color(
+                    STYLES[self.style]['topright'],
+                    cell.border_color)
+            elif first_row:
+                return self.set_color(
+                    STYLES[self.style]['topinter'],
+                    self.get_color(row_idx, col_idx, 1, 0) or cell.border_color)
+        elif side == 'leftvert':
+            if first_col:
+                return self.set_color(
+                    STYLES[self.style]['vertical'],
+                    cell.border_color)
+        elif side == 'rightvert':
+            return self.set_color(
+                STYLES[self.style]['vertical'],
+                self.get_color(row_idx, col_idx, 1, 0) or cell.border_color)
+
         elif side == 'bottomleft':
             if last_row and first_col:
-                return STYLES[self.style]['bottomleft']
-            elif last_row:
-                return STYLES[self.style]['bottominter']
+                return self.set_color(
+                    STYLES[self.style]['bottomleft'],
+                    cell.border_color)
             elif first_col:
-                return STYLES[self.style]['leftinter']
-            else:
-                return STYLES[self.style]['intersection']
+                return self.set_color(
+                    STYLES[self.style]['leftinter'],
+                    self.get_color(row_idx, col_idx, 0, 1) or cell.border_color)
+        elif side == 'bottomhoriz':
+            return self.set_color(
+                STYLES[self.style]['horizontal'] * self.widths[col_idx],
+                self.get_color(row_idx, col_idx, 0, 1) or cell.border_color)
         elif side == 'bottomright':
             if last_row and last_col:
-                return STYLES[self.style]['bottomright']
-            elif first_row:
-                return STYLES[self.style]['topright']
+                return self.set_color(
+                    STYLES[self.style]['bottomright'],
+                    cell.border_color)
+            elif last_col:
+                return self.set_color(
+                    STYLES[self.style]['rightinter'],
+                    self.get_color(row_idx, col_idx, 0, 1) or cell.border_color)
+            elif last_row:
+                return self.set_color(
+                    STYLES[self.style]['bottominter'],
+                    self.get_color(row_idx, col_idx, 1, 0) or cell.border_color)
             else:
-                return STYLES[self.style]['intersection']
+                return self.set_color(
+                    STYLES[self.style]['intersection'],
+                    (self.get_color(row_idx, col_idx, 1, 1)
+                     or self.get_color(row_idx, col_idx, 0, 1)
+                     or self.get_color(row_idx, col_idx, 1, 0)
+                     or cell.border_color))
+
+    def get_color(self, row_idx, col_idx, x, y):
+        cell = self[row_idx].cells[col_idx]
+        try:
+            next_cell = self[row_idx + y]
+            try:
+                return next_cell.cells[col_idx + x].border_color
+            except IndexError:
+                return cell.border_color
+        except IndexError:
+            return cell.border_color
+        return self[row_idx + 1].cells[col_idx + 1].border_color
+
+    def set_color(self, text, color):
+        return '\x1b[{:s}m{:s}\x1b[00m'.format(color, text) if color else text
 
     def flush(self):
         def get_row_height(row):
@@ -257,43 +324,52 @@ class TextTable(Table):
 
         self._get_columns_widths()
 
-        lines = []
+        lines = Buffer()
         text_row_idx, text_col_idx = 0, 0
         for row_idx, row in enumerate(self):
             height = get_row_height(row)
 
-            # Initialize each cells with empty string for the current row.
-            if row_idx == 0:
-                lines.append(['' for _ in range(len(self.widths) * 2 + 1)])
-            for _ in range(height + 1):
-                lines.append(['' for _ in range(len(self.widths) * 2 + 1)])
-
             for col_idx, cell in enumerate(row.cells):
                 # Add top border.
-                lines[text_row_idx][text_col_idx] = self.get_symbol(
-                    'topleft', row_idx, col_idx)
-                lines[text_row_idx][text_col_idx + 1] = (
-                    STYLES[self.style]['horizontal'] * self.widths[col_idx])
-                lines[text_row_idx][text_col_idx + 2] = self.get_symbol(
-                    'topright', row_idx, col_idx)
+                (lines.setdefault(text_row_idx, Buffer())
+                      .set(text_col_idx,
+                           self.get_symbol('topleft', row_idx, col_idx)))
+                (lines[text_row_idx]
+                    .set(text_col_idx + 1,
+                         self.get_symbol('tophoriz', row_idx, col_idx)))
+                (lines[text_row_idx]
+                    .set(text_col_idx + 2,
+                         self.get_symbol('topright', row_idx, col_idx)))
 
                 # Add text.
                 for _ in range(1, height + 1):
-                    lines[text_row_idx + _][text_col_idx] = STYLES[self.style]['vertical']
+                    (lines.setdefault(text_row_idx + _, Buffer())
+                          .set(text_col_idx,
+                               self.get_symbol('leftvert', row_idx, col_idx)))
                     try:
                         text = cell.text[_ - 1]
-                        lines[text_row_idx + _][text_col_idx + 1] = text
+                        (lines[text_row_idx + _]
+                            .set(text_col_idx + 1,
+                                 self.set_color(text, cell.text_color)))
                     except IndexError:
-                        lines[text_row_idx + _][text_col_idx + 1] = ' ' * self.widths[col_idx]
-                    lines[text_row_idx + _][text_col_idx + 2] = STYLES[self.style]['vertical']
+                        (lines[text_row_idx + _]
+                            .set(text_col_idx + 1,
+                                 self.set_color(' ' * self.widths[col_idx],
+                                                cell.text_color)))
+                    (lines[text_row_idx + _]
+                        .set(text_col_idx + 2,
+                             self.get_symbol('rightvert', row_idx, col_idx)))
 
-                # Print bottom border.
-                lines[text_row_idx + height + 1][text_col_idx] = self.get_symbol(
-                    'bottomleft', row_idx, col_idx)
-                lines[text_row_idx + height + 1][text_col_idx + 1] = (
-                    STYLES[self.style]['horizontal'] * self.widths[col_idx])
-                lines[text_row_idx + height + 1][text_col_idx + 2] = self.get_symbol(
-                    'bottomright', row_idx, col_idx)
+                # Add bottom border.
+                (lines.setdefault(text_row_idx + height + 1, Buffer())
+                      .set(text_col_idx,
+                           self.get_symbol('bottomleft', row_idx, col_idx)))
+                (lines[text_row_idx + height + 1]
+                    .set(text_col_idx + 1,
+                         self.get_symbol('bottomhoriz', row_idx, col_idx)))
+                (lines[text_row_idx + height + 1]
+                    .set(text_col_idx + 2,
+                         self.get_symbol('bottomright', row_idx, col_idx)))
 
                 text_col_idx += 2
 
