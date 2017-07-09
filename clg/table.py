@@ -110,7 +110,9 @@ class Header(Row):
 
 class Cell:
     def __init__(self, text, **kwargs):
-        self.text = text.split('\n') if not isinstance(text, (list, tuple)) else list(text)
+        self.text = (str(text).split('\n')
+                     if not isinstance(text, (list, tuple))
+                     else list(text))
         self.min_width = kwargs.get('min_width', -1)
         self.width = kwargs.get('width', -1)
         self.max_width = kwargs.get('max_width', -1)
@@ -137,7 +139,7 @@ class Cell:
 
     def get_text_width(self):
         return (self.padding_left
-                + max(len(val) for val in self.text)
+                + (max(len(val) for val in self.text) if self.text else 0)
                 + self.padding_right)
 
     def add_padding(self, value):
