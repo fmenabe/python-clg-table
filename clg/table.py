@@ -90,6 +90,7 @@ def init(args, **kwargs):
               'output_file': args.output_file or None}
     if args.format == 'text':
         params.update(widths=kwargs.pop('widths', []),
+                      title=kwargs.pop('title', None),
                       style=kwargs.pop('style', 'modern'),
                       text_color=kwargs.pop('text_color', None),
                       border_color=kwargs.pop('border_color', None))
@@ -230,9 +231,10 @@ class Table(list):
 
 
 class TextTable(Table):
-    def __init__(self, widths, page=False, output_file=None, style='modern',
+    def __init__(self, widths, page=False, output_file=None, title=None, style='modern',
                  text_color=None, border_color=None):
         Table.__init__(self, page, output_file)
+        self.title = title
         self.style = style
         self.widths = []
         self.heigths = []
