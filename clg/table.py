@@ -229,6 +229,19 @@ class Table(list):
         self.page = page
         self.output_file = output_file
 
+    def flush(self):
+        lines = '\n'.join(''.join(line) for line in self.render())
+
+        if self.output_file:
+            with open(self.output_file, 'w') as fhandler:
+                fhandler.write(lines)
+        elif self.page:
+            import os, pydoc
+            os.environ['PAGER'] = 'less -r -c'
+            pydoc.pager(lines)
+        else:
+            print(lines)
+
 
 class TextTable(Table):
     def __init__(self, widths, page=False, output_file=None, title=None, style='modern',
@@ -485,7 +498,9 @@ class TextTable(Table):
     def set_color(self, text, color):
         return '\x1b[{:s}m{:s}\x1b[00m'.format(color, text) if color else text
 
-    def flush(self):
+    def render(self):
+        lines = Buffer()
+
         def get_row_height(row):
             heights = []
             for col_idx, cell in enumerate(row.cells):
