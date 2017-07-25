@@ -174,7 +174,8 @@ class Cell:
         return lines
 
     def split_text(self, width):
-        at_start = lambda line: line == '' or line == ' ' * self.newline_indent
+        at_start = (lambda line:
+            line == '' or line == ' ' * self.newline_indent or line.startswith(' '))
 
         # For padding top and bottom, add empty lines at start/end of the text.
         for _ in range(self.padding_top):
@@ -199,13 +200,17 @@ class Cell:
                 word = words.pop(0)
 
                 # Add word to the current line.
-                new_line = cur_line + ('' if at_start(cur_line) else ' ') + word
+                if not word:
+                    new_line = cur_line + ' '
+                else:
+                    new_line = cur_line + ('' if at_start(cur_line) else ' ') + word
 
                 if len(new_line) > width:
                     # Manage the case where the word is bigger than width.
                     if len(word) > width:
                         lines.extend(self.format(string, width)
-                                     for string in self.split_word(word, width))
+                                     for string in self.split_word(new_line, width))
+                        cur_line = ' ' * self.newline_indent
                     # Add the current line, and initialize a new line with the word.
                     else:
                         lines.append(self.format(cur_line, width))
@@ -233,6 +238,7 @@ class Table(list):
 
     def flush(self):
         lines = '\n'.join(''.join(line) for line in self.render())
+        self.rows = []
 
         if self.output_file:
             with open(self.output_file, 'w') as fhandler:
@@ -515,7 +521,8 @@ class TextTable(Table):
             if value:
                 lines[row_idx].extend([value] * n)
 
-        self._get_columns_widths()
+        if not self.widths:
+            self._get_columns_widths()
 
         text_row_idx = 0
         for row_idx, row in enumerate(self):
@@ -549,8 +556,6 @@ class TextTable(Table):
                     self.get_border('bottomhoriz', row_idx, col_idx),
                     self.widths[col_idx])
                 add(idx, self.get_border('bottomright', row_idx, col_idx))
-
-#                text_col_idx += 2
 
             text_row_idx += height + 1
             text_col_idx = 0
