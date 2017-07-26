@@ -174,8 +174,7 @@ class Cell:
         return lines
 
     def split_text(self, width):
-        at_start = (lambda line:
-            line == '' or line == ' ' * self.newline_indent or line.startswith(' '))
+        at_start = lambda line: line == '' or line == ' ' * self.newline_indent
 
         # For padding top and bottom, add empty lines at start/end of the text.
         for _ in range(self.padding_top):
@@ -203,7 +202,9 @@ class Cell:
                 if not word:
                     new_line = cur_line + ' '
                 else:
-                    new_line = cur_line + ('' if at_start(cur_line) else ' ') + word
+                    new_line = (cur_line
+                                + ('' if at_start(cur_line) or line.startswith(' ') else ' ')
+                                + word)
 
                 if len(new_line) > width:
                     # Manage the case where the word is bigger than width.
