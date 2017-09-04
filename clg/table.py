@@ -260,6 +260,7 @@ class TextTable(Table):
         self.style = style
         self.widths = []
         self.heigths = []
+        self.footer = []
 
     def get_border(self, side, row_idx, col_idx):
         first_row = row_idx == 0
@@ -565,6 +566,8 @@ class TextTable(Table):
             for idx, char in enumerate(self.title):
                 lines[0][idx + 1] = char
 
+        if self.footer:
+            lines.append('\n'.join(self.footer))
         return lines
 
     def _get_columns_widths(self):
