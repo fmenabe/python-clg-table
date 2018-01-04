@@ -112,7 +112,7 @@ class Cell:
     def __init__(self, text, **kwargs):
         self.text = (str(text).split('\n')
                      if not isinstance(text, (list, tuple))
-                     else list(text))
+                     else [str(line) for line in text])
         self.min_width = kwargs.get('min_width', -1)
         self.width = kwargs.get('width', -1)
         self.max_width = kwargs.get('max_width', -1)
