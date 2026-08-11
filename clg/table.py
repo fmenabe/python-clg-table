@@ -5,8 +5,7 @@ import os
 import sys
 import csv
 import subprocess
-from pprint import pprint
-from namedlist import namedlist
+from dataclasses import dataclass
 
 STYLES = {
     'modern': {
@@ -48,8 +47,19 @@ cli_handler = logging.StreamHandler()
 cli_handler.setFormatter(logging.Formatter('(clg-table) %(levelname)s: %(message)s'))
 logger.addHandler(cli_handler)
 
-ColumnWidths = namedlist('ColumWidths', ('width', 'min_width', 'max_width', 'text_width'))
-BorderVisibility = namedlist('BorderVisibility', ('top', 'right', 'bottom', 'left'))
+@dataclass
+class ColumnWidths:
+    width: int
+    min_width: int
+    max_width: int
+    text_width: int
+
+@dataclass
+class BorderVisibility:
+    top: bool
+    right: bool
+    bottom: bool
+    left: bool
 
 term_width = lambda: int(subprocess.check_output(['tput', 'cols']))
 term_height = lambda: int(subprocess.check_output(['tput', 'lines']))
